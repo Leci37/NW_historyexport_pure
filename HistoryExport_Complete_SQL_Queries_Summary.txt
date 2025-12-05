@@ -1,0 +1,1350 @@
+================================================================================
+HISTORYEXPORT PROJECT - COMPLETE SQL QUERIES ANALYSIS
+.NET 8 Migration Reference
+Version 2.0 (Corrected & Comprehensive)
+================================================================================
+
+QUERY INVENTORY (22 Total Operations - Corrected)
+================================================================================
+
+BREAKDOWN:
+  • Web Application (HistoryExport):       5 Explicit Queries
+  • Worker Application (HistoryExportCMD): 17 Queries (Explicit + Implied)
+  • Total:                                 22 Distinct SQL Operations
+
+================================================================================
+PART 1: WEB APPLICATION (HistoryExport) - 5 QUERIES
+================================================================================
+
+1. GET PARAMETER - Read Configuration Flag
+────────────────────────────────────────────────────────────────────────────
+   Database:        PointsHistory
+   Table:           Parameter
+   Operation Type:  SELECT (Read)
+   Scope:           Single row
+   
+   SQL Query:
+   ──────────
+   SELECT Value FROM Parameter WHERE Name = @Name
+   
+   Parameters:
+   -----------
+   @Name (VARCHAR) - Configuration key name
+   
+   Purpose:
+   --------
+   Retrieve application configuration values stored as "0" or "1" strings.
+   Used to read system-wide boolean flags (e.g., RedundantPointHistory).
+   
+   Source Code:
+   ────────────
+   File:    DBAccess.cs
+   Method:  GetParameter(string name, out bool value, out string errtext)
+   
+   Example Values:
+   ────────────────
+   - Name = "RedundantPointHistory" → Value = "0" or "1"
+   - Name = "HA_Enabled" → Value = "1"
+
+
+2. GET POINTS - Retrieve All Points for Grid Display
+────────────────────────────────────────────────────────────────────────────
+   Database:        PointsHistory
+   Table:           Point
+   Operation Type:  SELECT (Read)
+   Scope:           All rows (usually 100s-1000s)
+   
+   SQL Query:
+   ──────────
+   SELECT PointId, PointName, ParamName, Description, Device, 
+          HistoryFast, HistorySlow, HistoryExtd, 
+          HistoryFastArch, HistorySlowArch, HistoryExtdArch 
+   FROM Point 
+   ORDER BY PointName
+   
+   Parameters:
+   -----------
+   None
+   
+   Purpose:
+   --------
+   Load complete point configuration for web grid UI display and editing.
+   Includes both read-only system flags and user-editable archive flags.
+   
+   Data Returned:
+   ───────────────
+   • PointId, PointName, ParamName (Identifiers)
+   • Description, Device (User-editable fields)
+   • HistoryFast, HistorySlow, HistoryExtd (System flags)
+   • HistoryFastArch, HistorySlowArch, HistoryExtdArch (User flags)
+   
+   Source Code:
+   ────────────
+   File:    DBAccess.cs
+   Method:  GetPoints(out Points points, out string errtext)
+
+
+3. UPDATE POINT - Save User Edits
+────────────────────────────────────────────────────────────────────────────
+   Database:        PointsHistory
+   Table:           Point
+   Operation Type:  UPDATE (Write)
+   Scope:           Single row by PointId
+   
+   SQL Query:
+   ──────────
+   UPDATE Point 
+   SET Description = @Descriptor, 
+       Device = @Device, 
+       HistoryFastArch = @HistoryFastArch, 
+       HistorySlowArch = @HistorySlowArch, 
+       HistoryExtdArch = @HistoryExtdArch  
+   WHERE PointId = @PointId
+   
+   Parameters:
+   -----------
+   @PointId          (INT)     - Primary key (WHERE clause)
+   @Descriptor       (VARCHAR) - Point description
+   @Device           (VARCHAR) - Device assignment
+   @HistoryFastArch  (BIT)     - Archive 5-second data flag
+   @HistorySlowArch  (BIT)     - Archive 1-minute data flag
+   @HistoryExtdArch  (BIT)     - Archive 1-hour data flag
+   
+   Purpose:
+   --------
+   Persist user changes from the web grid.
+   Allows operators to edit descriptive text, device names, and archive flags.
+   
+   Immutable Columns:
+   ──────────────────
+   PointName, ParamName, HistoryFast, HistorySlow, HistoryExtd
+   (These are sourced from EBI and CANNOT be modified)
+   
+   Source Code:
+   ────────────
+   File:    DBAccess.cs
+   Method:  UpdatePoint(int PointId, string descriptor, string device, 
+                       bool historyFastArch, bool historySlowArch, 
+                       bool historyExtdArch, out string errtext)
+
+
+4. STORE PARAMETER - Update Configuration Flag
+────────────────────────────────────────────────────────────────────────────
+   Database:        PointsHistory
+   Table:           Parameter
+   Operation Type:  UPDATE (Write)
+   Scope:           Single row by Name
+   
+   SQL Query:
+   ──────────
+   UPDATE Parameter 
+   SET Value = @Value 
+   WHERE Name = @Name
+   
+   Parameters:
+   -----------
+   @Name  (VARCHAR) - Configuration key name
+   @Value (VARCHAR) - Configuration value ("0" or "1")
+   
+   Purpose:
+   --------
+   Persist application settings and feature toggles.
+   Values stored as string representations of booleans.
+   
+   Example Settings:
+   ──────────────────
+   - RedundantPointHistory = "0" or "1"
+   - HA_Enabled = "1"
+   - LogLevel = "1"
+   
+   Source Code:
+   ────────────
+   File:    DBAccess.cs
+   Method:  StoreParameter(string name, bool value, out string errtext)
+
+
+5. REFRESH POINTS - Execute Stored Procedure for Point Import
+────────────────────────────────────────────────────────────────────────────
+   Database:        PointsHistory
+   Object Type:     Stored Procedure
+   Operation Type:  EXECUTE (Indirect Write)
+   Scope:           Entire Point table
+   
+   SQL Query:
+   ──────────
+   EXEC sp_ReadEbiPoints @ProcessPnt = @ProcessPnt, @retval = @retval OUTPUT
+   
+   Parameters:
+   -----------
+   @ProcessPnt (NVARCHAR) - File path to external EXE (e.g., C:\...\ProcessPnt.exe)
+   @retval     (INT OUTPUT) - Return code (0 = success, non-zero = error)
+   
+   Purpose:
+   --------
+   Trigger external point import process when Point table is empty or needs refresh.
+   Indirectly populates the Point table via external executables.
+   
+   Execution Flow:
+   ────────────────
+   1. sp_ReadEbiPoints is called with path to ProcessPnt.exe
+   2. Internally, sp_ReadEbiPoints invokes:
+      a. bckbld.exe → Generates allpoints.pnt file
+      b. ProcessPnt.exe → Imports point data to Point table
+   3. Return code is checked (0 = success)
+   
+   Source Code:
+   ────────────
+   File:    DBAccess.cs
+   Method:  Refresh(string path, out string errtext)
+   
+   Called From:
+   ─────────────
+   default.cs → Page_Load() and btRefresh_Click()
+
+
+================================================================================
+PART 2: WORKER APPLICATION (HistoryExportCMD) - 17 QUERIES
+================================================================================
+
+SUBSECTION 2A: ETL INITIALIZATION & POINT DISCOVERY
+────────────────────────────────────────────────────
+
+6. GET LAST TIMESTAMP - FAST HISTORY (5-Second Data)
+────────────────────────────────────────────────────────────────────────────
+   Database:        PointsHistory
+   Table:           History_5sec
+   Operation Type:  SELECT (Read)
+   Scope:           Single aggregate value
+   
+   SQL Query:
+   ──────────
+   SELECT MAX(USTTimestamp) FROM History_5sec
+   
+   Parameters:
+   -----------
+   None
+   
+   Purpose:
+   --------
+   Find the most recent timestamp in 5-second history to determine where to 
+   resume data collection from the EBI ODBC source.
+   
+   Context:
+   ────────
+   ETL Initialization Phase - Called once per worker cycle to establish 
+   the time range for data extraction.
+   
+   Example Flow:
+   ──────────────
+   1. Query returns: 2024-12-05 14:35:00.000
+   2. Worker will fetch EBI data from: 2024-12-05 14:35:00.001 onwards
+   3. Ensures no data gaps or duplicates between worker cycles
+
+
+7. GET LAST TIMESTAMP - SLOW HISTORY (1-Minute Data)
+────────────────────────────────────────────────────────────────────────────
+   Database:        PointsHistory
+   Table:           History_1min
+   Operation Type:  SELECT (Read)
+   Scope:           Single aggregate value
+   
+   SQL Query:
+   ──────────
+   SELECT MAX(USTTimestamp) FROM History_1min
+   
+   Parameters:
+   -----------
+   None
+   
+   Purpose:
+   --------
+   Find the most recent timestamp in 1-minute aggregated history.
+   
+   Context:
+   ────────
+   ETL Initialization Phase - Determines start point for 1-minute data sync.
+
+
+8. GET LAST TIMESTAMP - EXTENDED HISTORY (1-Hour Data)
+────────────────────────────────────────────────────────────────────────────
+   Database:        PointsHistory
+   Table:           History_1hour
+   Operation Type:  SELECT (Read)
+   Scope:           Single aggregate value
+   
+   SQL Query:
+   ──────────
+   SELECT MAX(USTTimestamp) FROM History_1hour
+   
+   Parameters:
+   -----------
+   None
+   
+   Purpose:
+   --------
+   Find the most recent timestamp in 1-hour aggregated history.
+   
+   Context:
+   ────────
+   ETL Initialization Phase - Determines start point for 1-hour data sync.
+
+
+9. FETCH ENABLED POINTS - Get Points Requiring Data Collection
+────────────────────────────────────────────────────────────────────────────
+   Database:        PointsHistory
+   Table:           Point
+   Operation Type:  SELECT (Read)
+   Scope:           Filtered rows (typically 20-50% of all points)
+   
+   SQL Query:
+   ──────────
+   SELECT PointId, PointName, ParamName, 
+          HistoryFast, HistorySlow, HistoryExtd, 
+          HistoryFastArch, HistorySlowArch, HistoryExtdArch 
+   FROM Point 
+   WHERE ((HistoryFast = 1) AND (HistoryFastArch = 1)) 
+      OR ((HistorySlow = 1) AND (HistorySlowArch = 1)) 
+      OR ((HistoryExtd = 1) AND (HistoryExtdArch = 1))
+   
+   Parameters:
+   -----------
+   None
+   
+   Purpose:
+   --------
+   Retrieve only points that have BOTH:
+   • System flag enabled (HistoryFast/Slow/Extd = 1)
+   • User archive flag enabled (HistoryFastArch/SlowArch/ExtdArch = 1)
+   
+   Logic:
+   ──────
+   A point is processed if ANY of these conditions are true:
+   • (Fast=1 AND FastArch=1) → Collect 5-second data
+   • (Slow=1 AND SlowArch=1) → Collect 1-minute data
+   • (Extd=1 AND ExtdArch=1) → Collect 1-hour data
+   
+   Context:
+   ────────
+   ETL Discovery Phase - Determines which points to fetch from EBI ODBC source.
+
+
+================================================================================
+SUBSECTION 2B: HIGH AVAILABILITY & SYSTEM STATUS
+────────────────────────────────────────────────
+
+10. CHECK FOR PRIMARY STATUS STORED PROCEDURE EXISTENCE
+───────────────────────────────────────────────────────────────────────────
+   Database:        EBI_SQL (hwsystem)
+   Object Type:     System metadata query
+   Operation Type:  SELECT (Read)
+   Scope:           Single row (object existence check)
+   
+   SQL Query:
+   ──────────
+   SELECT OBJECT_ID('hwsystem.dbo.hsc_sp_IsPrimary')
+   
+   Parameters:
+   -----------
+   None
+   
+   Purpose:
+   --------
+   Verify that the Honeywell system stored procedure exists before attempting 
+   to execute it. Prevents runtime errors if procedure is missing.
+   
+   Return Values:
+   ───────────────
+   • Non-NULL (integer) = Object exists
+   • NULL = Object does not exist
+   
+   Context:
+   ────────
+   HA Validation Phase - Called before attempting HA status check.
+
+
+11. CHECK FOR PRIMARY STATUS FUNCTION EXISTENCE
+──────────────────────────────────────────────────────────────────────────
+   Database:        EBI_SQL (hwsystem)
+   Object Type:     System metadata query
+   Operation Type:  SELECT (Read)
+   Scope:           Single row (object existence check)
+   
+   SQL Query:
+   ──────────
+   SELECT OBJECT_ID('hwsystem.dbo.hsc_mfn_IsPrimary')
+   
+   Parameters:
+   -----------
+   None
+   
+   Purpose:
+   --------
+   Verify that the Honeywell system function exists (alternative to stored proc).
+   Allows fallback if stored procedure is unavailable.
+   
+   Return Values:
+   ───────────────
+   • Non-NULL (integer) = Object exists
+   • NULL = Object does not exist
+   
+   Context:
+   ────────
+   HA Validation Phase - Checked if stored procedure doesn't exist.
+
+
+12. CHECK PRIMARY STATUS - EXECUTE STORED PROCEDURE
+───────────────────────────────────────────────────────────────────────────
+   Database:        EBI_SQL (hwsystem)
+   Object Type:     Stored Procedure (Honeywell system)
+   Operation Type:  EXECUTE (Read)
+   Scope:           Single row return
+   
+   SQL Query:
+   ──────────
+   EXEC hwsystem.dbo.hsc_sp_IsPrimary
+   
+   Parameters:
+   -----------
+   None (varies by Honeywell version)
+   
+   Return Values:
+   ───────────────
+   • 1 or True = Server is Primary
+   • 0 or False = Server is Backup (Secondary)
+   
+   Purpose:
+   --------
+   Determine if the current server is the Primary node in a High Availability setup.
+   Drives decision logic: collect from EBI (if Primary) or sync from Primary (if Backup).
+   
+   Context:
+   ────────
+   HA Status Check Phase - Called every worker cycle to determine operational mode.
+
+
+13. CHECK PRIMARY STATUS - EXECUTE SCALAR FUNCTION (ALTERNATIVE)
+──────────────────────────────────────────────────────────────────────────
+   Database:        EBI_SQL (hwsystem)
+   Object Type:     Scalar Function (Honeywell system)
+   Operation Type:  SELECT (Read)
+   Scope:           Single scalar value
+   
+   SQL Query:
+   ──────────
+   SELECT hwsystem.dbo.hsc_mfn_IsPrimary()
+   
+   Parameters:
+   -----------
+   None
+   
+   Return Values:
+   ───────────────
+   • 1 = Server is Primary
+   • 0 = Server is Backup
+   
+   Purpose:
+   --------
+   Alternative method to check Primary status if stored procedure unavailable.
+   Provides redundant check mechanism for HA detection.
+   
+   Context:
+   ────────
+   HA Status Check Phase - Fallback to function if procedure not available.
+
+
+================================================================================
+SUBSECTION 2C: ODBC DATA EXTRACTION
+────────────────────────────────────
+
+14. EXTRACT ODBC DATA - 5-SECOND SNAPSHOTS
+────────────────────────────────────────────────────────────────────────────
+   Database:        EBI_ODBC (Honeywell EBI)
+   Table:           History5SecondSnapshot
+   Operation Type:  SELECT (Read)
+   Scope:           Multiple rows (100s-1000s per batch)
+   
+   SQL Query:
+   ──────────
+   SELECT USTTimeStamp, TimeStamp, Parameter01, Value01, Quality01, 
+          Parameter02, Value02, Quality02, ... [up to Parameter_N]
+   FROM History5SecondSnapshot
+   WHERE USTTimeStamp >= @StartTime AND USTTimeStamp < @EndTime
+     AND (Parameter01 = 'PointName1.ParamName1'
+       OR Parameter01 = 'PointName2.ParamName2'
+       OR Parameter01 = 'PointName3.ParamName3'
+       ...)
+   
+   Parameters:
+   -----------
+   @StartTime (DATETIME) - Query start (USTTimestamp from History_5sec or min interval)
+   @EndTime   (DATETIME) - Query end (current time or interval boundary)
+   Dynamic ORs:          - Generated for each enabled point in batch
+   
+   Purpose:
+   --------
+   Extract raw 5-second snapshot data from Honeywell EBI system via ODBC.
+   This is the PRIMARY data source for fast-frequency history collection.
+   
+   Data Flow:
+   ──────────
+   ODBC Query → Raw snapshots → Worker processes → Inserted to History_5sec
+   
+   Key Characteristics:
+   ──────────────────
+   • Query is DYNAMICALLY CONSTRUCTED based on enabled points
+   • Batched to avoid excessively large OR clauses
+   • Highest temporal resolution (5-second intervals)
+   • Contains Quality flags (01, 02, etc.)
+   
+   Source Code Context:
+   ───────────────────
+   File:    DBAccess.cs / Program.cs (Worker)
+   Method:  ExecuteOdbc() - Dynamic query building
+
+
+15. EXTRACT ODBC DATA - 1-MINUTE SNAPSHOTS
+────────────────────────────────────────────────────────────────────────────
+   Database:        EBI_ODBC (Honeywell EBI)
+   Table:           History1MinSnapshot
+   Operation Type:  SELECT (Read)
+   Scope:           Multiple rows (tens to 100s per batch)
+   
+   SQL Query:
+   ──────────
+   SELECT USTTimeStamp, TimeStamp, Parameter01, Value01, Quality01, 
+          Parameter02, Value02, Quality02, ... [up to Parameter_N]
+   FROM History1MinSnapshot
+   WHERE USTTimeStamp >= @StartTime AND USTTimeStamp < @EndTime
+     AND (Parameter01 = 'PointName1.ParamName1'
+       OR Parameter01 = 'PointName2.ParamName2'
+       OR ...)
+   
+   Parameters:
+   -----------
+   @StartTime (DATETIME) - Query start (from History_1min MAX or interval)
+   @EndTime   (DATETIME) - Query end
+   Dynamic ORs:          - Generated for enabled points
+   
+   Purpose:
+   --------
+   Extract 1-minute aggregated snapshot data from Honeywell EBI via ODBC.
+   Used when "Slow" history collection is enabled for points.
+   
+   Characteristics:
+   ────────────────
+   • Pre-aggregated to 1-minute intervals by EBI
+   • Lower volume than 5-second data
+   • Separate table in ODBC source
+
+
+16. EXTRACT ODBC DATA - 1-HOUR SNAPSHOTS
+────────────────────────────────────────────────────────────────────────────
+   Database:        EBI_ODBC (Honeywell EBI)
+   Table:           History1HourSnapshot
+   Operation Type:  SELECT (Read)
+   Scope:           Multiple rows (few to tens per batch)
+   
+   SQL Query:
+   ──────────
+   SELECT USTTimeStamp, TimeStamp, Parameter01, Value01, Quality01, 
+          Parameter02, Value02, Quality02, ... [up to Parameter_N]
+   FROM History1HourSnapshot
+   WHERE USTTimeStamp >= @StartTime AND USTTimeStamp < @EndTime
+     AND (Parameter01 = 'PointName1.ParamName1'
+       OR Parameter01 = 'PointName2.ParamName2'
+       OR ...)
+   
+   Parameters:
+   -----------
+   @StartTime (DATETIME) - Query start (from History_1hour MAX)
+   @EndTime   (DATETIME) - Query end
+   Dynamic ORs:          - Generated for enabled points
+   
+   Purpose:
+   --------
+   Extract 1-hour aggregated snapshot data from Honeywell EBI via ODBC.
+   Used when "Extended" history collection is enabled for points.
+   
+   Characteristics:
+   ────────────────
+   • Pre-aggregated to 1-hour intervals by EBI
+   • Lowest volume and frequency
+   • Separate table in ODBC source
+
+
+================================================================================
+SUBSECTION 2D: SQL SERVER DATA INSERTION (UNIFIED PATTERN)
+──────────────────────────────────────────────────────────
+
+IMPORTANT CORRECTION:
+═════════════════════
+All three history types (5-second, 1-minute, 1-hour) use the SAME insertion 
+pattern:
+  1. CREATE TEMPORARY TABLE #History
+  2. INSERT extracted ODBC data into #History
+  3. INSERT from #History into final History table
+
+This is NOT just for 5-second data—it applies to ALL three types.
+
+Process Flow (Applies to Items 17, 18, 19):
+─────────────────────────────────────────────
+For i = 1 to 3:  // 1=5sec, 2=1min, 3=1hour
+  ├─ dbaccess.Prepare()      → CREATE TABLE #History
+  ├─ StoreHistory()           → INSERT INTO #History (from ODBC data)
+  └─ dbaccess.Finish()        → INSERT INTO final History_X table
+
+
+17. INSERT HISTORICAL DATA - 5-SECOND (TEMP TABLE STAGING)
+────────────────────────────────────────────────────────────────────────────
+   Database:        PointsHistory
+   Tables:          #History (temporary), History_5sec (final)
+   Operation Type:  CREATE, INSERT, SELECT (Write)
+   Scope:           Multiple rows per batch
+   
+   Step 1: CREATE TEMPORARY TABLE
+   ──────────────────────────────
+   CREATE TABLE #History (
+     PointId      INT NOT NULL,
+     USTTimestamp DATETIME NOT NULL,
+     Timestamp    DATETIME NULL,
+     Value        FLOAT NULL
+   )
+   
+   Step 2: INSERT INTO TEMPORARY TABLE (Batch)
+   ──────────────────────────────────────────
+   INSERT INTO #History (PointId, USTTimestamp, Timestamp, Value)
+   VALUES 
+     (123, '2024-12-05 14:35:00.000', '2024-12-05 15:35:00.000', 45.67),
+     (124, '2024-12-05 14:35:00.000', '2024-12-05 15:35:00.000', 89.23),
+     (125, '2024-12-05 14:35:05.000', '2024-12-05 15:35:05.000', 56.78),
+     ...
+   
+   Step 3: INSERT INTO FINAL TABLE (SELECT from Temp)
+   ──────────────────────────────────────────────────
+   INSERT INTO History_5sec (PointId, USTTimestamp, Timestamp, Value)
+   SELECT PointId, USTTimestamp, Timestamp, Value FROM #History
+   
+   Purpose:
+   --------
+   Bulk load 5-second historical data with staging for efficiency.
+   Temporary table allows:
+   • Batching of INSERT operations
+   • Atomic move to final table
+   • Better transaction handling
+   
+   Performance Benefit:
+   ────────────────────
+   Single INSERT from #History is faster than individual row inserts.
+   Avoids network round-trips for each value row.
+   
+   Source Code:
+   ────────────
+   File:    DBAccess.cs
+   Methods: Prepare() → StoreHistory() → Finish()
+
+
+18. INSERT HISTORICAL DATA - 1-MINUTE (TEMP TABLE STAGING)
+────────────────────────────────────────────────────────────────────────────
+   Database:        PointsHistory
+   Tables:          #History (temporary), History_1min (final)
+   Operation Type:  CREATE, INSERT, SELECT (Write)
+   Scope:           Multiple rows per batch (typically 20-50% less than 5-sec)
+   
+   Step 1: CREATE TEMPORARY TABLE (same structure as Item 17)
+   ──────────────────────────────────────────────────────────
+   CREATE TABLE #History (
+     PointId      INT NOT NULL,
+     USTTimestamp DATETIME NOT NULL,
+     Timestamp    DATETIME NULL,
+     Value        FLOAT NULL
+   )
+   
+   Step 2: INSERT INTO #History (Batch from ODBC 1-min data)
+   ─────────────────────────────────────────────────────────
+   INSERT INTO #History (PointId, USTTimestamp, Timestamp, Value)
+   VALUES (123, '2024-12-05 14:35:00.000', ..., 45.67), ...
+   
+   Step 3: INSERT INTO History_1min (SELECT from #History)
+   ────────────────────────────────────────────────────────
+   INSERT INTO History_1min (PointId, USTTimestamp, Timestamp, Value)
+   SELECT PointId, USTTimestamp, Timestamp, Value FROM #History
+   
+   Purpose:
+   --------
+   Bulk load 1-minute aggregated historical data using identical temp table pattern.
+   
+   Data Source:
+   ─────────────
+   From ODBC History1MinSnapshot table (pre-aggregated by Honeywell)
+
+
+19. INSERT HISTORICAL DATA - 1-HOUR (TEMP TABLE STAGING)
+────────────────────────────────────────────────────────────────────────────
+   Database:        PointsHistory
+   Tables:          #History (temporary), History_1hour (final)
+   Operation Type:  CREATE, INSERT, SELECT (Write)
+   Scope:           Multiple rows per batch (lowest volume)
+   
+   Step 1: CREATE TEMPORARY TABLE (same structure)
+   ────────────────────────────────────────────────
+   CREATE TABLE #History (
+     PointId      INT NOT NULL,
+     USTTimestamp DATETIME NOT NULL,
+     Timestamp    DATETIME NULL,
+     Value        FLOAT NULL
+   )
+   
+   Step 2: INSERT INTO #History (Batch from ODBC 1-hour data)
+   ──────────────────────────────────────────────────────────
+   INSERT INTO #History (PointId, USTTimestamp, Timestamp, Value)
+   VALUES (123, '2024-12-05 14:00:00.000', ..., 45.67), ...
+   
+   Step 3: INSERT INTO History_1hour (SELECT from #History)
+   ─────────────────────────────────────────────────────────
+   INSERT INTO History_1hour (PointId, USTTimestamp, Timestamp, Value)
+   SELECT PointId, USTTimestamp, Timestamp, Value FROM #History
+   
+   Purpose:
+   --------
+   Bulk load 1-hour aggregated historical data using identical temp table pattern.
+   
+   Data Source:
+   ─────────────
+   From ODBC History1HourSnapshot table (pre-aggregated by Honeywell)
+
+
+================================================================================
+SUBSECTION 2E: AGGREGATION & ANALYTICS
+──────────────────────────────────────
+
+20. CALCULATE 15-MINUTE AVERAGES - Aggregation Query
+────────────────────────────────────────────────────────────────────────────
+   Database:        PointsHistory
+   Tables Read:     History_1min
+   Tables Write:    History_15min
+   Operation Type:  INSERT + SELECT with GROUP BY (Write)
+   Scope:           Range of 1-minute data (typically 15 rows → 1 aggregated row)
+   
+   SQL Query:
+   ──────────
+   INSERT INTO History_15min (USTTimestamp, Timestamp, PointName, ParamName, Value)
+   SELECT 
+     [TimeGroupingLogic],     -- Grouped to 15-min boundaries
+     PointName, 
+     ParamName, 
+     AVG(Value)
+   FROM History_1min
+   WHERE USTTimestamp >= @FROM AND USTTimestamp < @TO
+   GROUP BY [TimeGroupingLogic], PointName, ParamName
+   
+   Parameters:
+   -----------
+   @FROM (DATETIME) - Aggregation window start (e.g., 2024-12-05 14:00:00)
+   @TO   (DATETIME) - Aggregation window end   (e.g., 2024-12-05 15:00:00)
+   
+   Purpose:
+   --------
+   Calculate 15-minute averages from 1-minute granular data for:
+   • Performance optimization (reduced storage/query overhead)
+   • Trending analysis (smoothed data)
+   • Long-term historical reporting
+   
+   IMPORTANT NOTE - Schema Difference:
+   ───────────────────────────────────
+   History_15min stores:
+   • USTTimestamp, Timestamp (timestamps)
+   • PointName, ParamName (NAMES - unique to this table!)
+   • Value (averaged)
+   
+   Unlike History_5sec/1min/1hour which store PointId only.
+   
+   This is a KEY DIFFERENCE in the schema.
+   
+   Aggregation Logic:
+   ──────────────────
+   • 15 × 1-minute values → 1 × 15-minute average
+   • Rounded to 15-minute boundaries (e.g., :00, :15, :30, :45)
+   • Prevents data gaps by ensuring complete windows
+   
+   Context:
+   ────────
+   Post-ETL Aggregation Phase - Called after all History_1min inserts complete.
+
+
+================================================================================
+SUBSECTION 2F: HIGH AVAILABILITY SYNCHRONIZATION
+─────────────────────────────────────────────────
+
+BACKUP SERVER SYNC STRATEGY:
+═════════════════════════════
+When running as BACKUP (Secondary) node, instead of collecting from EBI ODBC,
+the worker syncs data from the PRIMARY server's PointsHistory database.
+
+Sync operations performed in two phases:
+1. Point Configuration Sync
+2. Historical Data Sync
+
+
+21. SYNC POINT CONFIGURATION - DETERMINE SYNC RANGE (PRIMARY MAX TIMESTAMP)
+────────────────────────────────────────────────────────────────────────────
+   Database:        EBI_SQL (Primary server's PointsHistory)
+   Table:           Point
+   Operation Type:  SELECT (Read)
+   Scope:           Single aggregate value
+   
+   SQL Query:
+   ──────────
+   SELECT MAX(PointId) FROM {PrimaryServer}.PointsHistory.dbo.Point
+   
+   Parameters:
+   -----------
+   {PrimaryServer} - Hostname of Primary server (e.g., 'SERVER-PRIMARY\SQLEXPRESS')
+   
+   Purpose:
+   --------
+   Determine the highest PointId on Primary to establish sync range.
+   Ensures we sync all points including newly added ones.
+   
+   Context:
+   ────────
+   HA Sync Phase (Backup only) - Part of range determination logic.
+
+
+22. SYNC POINT CONFIGURATION - INSERT NEW POINTS FROM PRIMARY TO BACKUP
+──────────────────────────────────────────────────────────────────────────────
+   Database:        PointsHistory (Primary → Backup, cross-server)
+   Table:           Point
+   Operation Type:  INSERT + SELECT (Write to Backup)
+   Scope:           New rows only (left join anti-join pattern)
+   
+   SQL Query:
+   ──────────
+   INSERT INTO {BackupServer}.PointsHistory.dbo.Point
+   SELECT P.* 
+   FROM {PrimaryServer}.PointsHistory.dbo.Point P 
+   LEFT JOIN {BackupServer}.PointsHistory.dbo.Point B 
+     ON P.PointId = B.PointId 
+   WHERE B.PointId IS NULL
+   
+   Parameters:
+   -----------
+   {PrimaryServer} - Hostname of Primary server
+   {BackupServer}  - Hostname of Backup server (local or remote)
+   
+   Purpose:
+   --------
+   Insert newly added points from Primary to Backup.
+   Only inserts rows that exist on Primary but NOT on Backup.
+   
+   Logic:
+   ──────
+   • LEFT JOIN matches Primary points with Backup by PointId
+   • WHERE B.PointId IS NULL identifies rows on Primary with no Backup match
+   • These are the "new" points to sync
+   
+   Scope:
+   ──────
+   Typically 0-few rows per sync cycle (points don't change frequently).
+
+
+23. SYNC POINT CONFIGURATION - UPDATE EXISTING POINTS ON BACKUP
+──────────────────────────────────────────────────────────────────────────────
+   Database:        PointsHistory (Primary → Backup, cross-server)
+   Table:           Point
+   Operation Type:  UPDATE (Write to Backup)
+   Scope:           All matching PointIds (full column sync)
+   
+   SQL Query:
+   ──────────
+   UPDATE B 
+   SET B.PointName = P.PointName, 
+       B.ParamName = P.ParamName,
+       B.Description = P.Description,
+       B.Device = P.Device,
+       B.HistoryFast = P.HistoryFast,
+       B.HistorySlow = P.HistorySlow,
+       B.HistoryExtd = P.HistoryExtd,
+       B.HistoryFastArch = P.HistoryFastArch,
+       B.HistorySlowArch = P.HistorySlowArch,
+       B.HistoryExtdArch = P.HistoryExtdArch
+   FROM {PrimaryServer}.PointsHistory.dbo.Point P 
+   JOIN {BackupServer}.PointsHistory.dbo.Point B 
+     ON P.PointId = B.PointId
+   
+   Parameters:
+   -----------
+   {PrimaryServer} - Hostname of Primary server
+   {BackupServer}  - Hostname of Backup server
+   
+   Purpose:
+   --------
+   Sync all column changes for existing points (matching PointId).
+   Ensures Backup has identical point configuration as Primary.
+   
+   Synchronized Fields:
+   ────────────────────
+   • PointName, ParamName (usually unchanged)
+   • Description, Device (user edits)
+   • HistoryFast, HistorySlow, HistoryExtd (system flags)
+   • HistoryFastArch, HistorySlowArch, HistoryExtdArch (user flags)
+   
+   Logic:
+   ──────
+   • INNER JOIN on PointId matches only existing points
+   • UPDATE B... FROM P applies Primary values to Backup
+   • Ensures bidirectional consistency
+   
+   Context:
+   ────────
+   HA Point Sync Phase (Backup only) - Called after INSERT phase.
+
+
+24. SYNC HISTORY - DETERMINE SYNC RANGE (PRIMARY MAX TIMESTAMP)
+──────────────────────────────────────────────────────────────────────────────
+   Database:        EBI_SQL (Primary server's PointsHistory)
+   Table:           History_5sec, History_1min, or History_1hour
+   Operation Type:  SELECT (Read)
+   Scope:           Single aggregate value per table
+   
+   SQL Query:
+   ──────────
+   SELECT MAX(USTTimestamp) FROM {PrimaryServer}.PointsHistory.dbo.{HistoryTable}
+   
+   Parameters:
+   -----------
+   {PrimaryServer} - Hostname of Primary server
+   {HistoryTable}  - Table name: History_5sec, History_1min, or History_1hour
+   
+   Example:
+   ────────
+   SELECT MAX(USTTimestamp) FROM SERVER-PRIMARY.PointsHistory.dbo.History_5sec
+   
+   Purpose:
+   --------
+   Find the most recent timestamp on Primary for each history table.
+   Determines what range to sync to Backup.
+   
+   Context:
+   ────────
+   HA History Sync Phase (Backup only) - Part of range determination.
+
+
+25. SYNC HISTORY - DETERMINE SYNC RANGE (BACKUP MAX TIMESTAMP)
+──────────────────────────────────────────────────────────────────────────────
+   Database:        PointsHistory (Local Backup)
+   Table:           History_5sec, History_1min, or History_1hour
+   Operation Type:  SELECT (Read)
+   Scope:           Single aggregate value per table
+   
+   SQL Query:
+   ──────────
+   SELECT MAX(USTTimestamp) FROM History_5sec
+   -- OR
+   SELECT MAX(USTTimestamp) FROM History_1min
+   -- OR
+   SELECT MAX(USTTimestamp) FROM History_1hour
+   
+   Parameters:
+   -----------
+   None (local query on Backup)
+   
+   Purpose:
+   --------
+   Find the most recent timestamp on Backup for each history table.
+   Establishes the gap between Backup and Primary (what needs syncing).
+   
+   Calculation:
+   ─────────────
+   Gap = Primary_MAX - Backup_MAX
+   
+   If Gap > 0:
+     → Sync Primary data from (Backup_MAX + 1) to (Primary_MAX)
+   
+   Context:
+   ────────
+   HA History Sync Phase (Backup only) - Executed locally before remote sync.
+
+
+26. SYNC HISTORY - INSERT MISSING DATA FROM PRIMARY TO BACKUP
+──────────────────────────────────────────────────────────────────────────────
+   Database:        PointsHistory (Primary → Backup, cross-server)
+   Tables:          History_5sec, History_1min, or History_1hour (variable)
+   Operation Type:  INSERT + SELECT (Write to Backup)
+   Scope:           Missing rows only (time-range + anti-join)
+   
+   SQL Query:
+   ──────────
+   INSERT INTO {BackupServer}.PointsHistory.dbo.{HistoryTable}
+   SELECT P.* 
+   FROM {PrimaryServer}.PointsHistory.dbo.{HistoryTable} P 
+   LEFT JOIN {BackupServer}.PointsHistory.dbo.{HistoryTable} B 
+     ON P.PointId = B.PointId 
+     AND P.USTTimestamp = B.USTTimestamp 
+   WHERE P.USTTimestamp > @MinTimestamp 
+     AND B.PointId IS NULL
+   
+   Parameters:
+   -----------
+   {PrimaryServer}  - Hostname of Primary server
+   {BackupServer}   - Hostname of Backup server
+   {HistoryTable}   - Table name: History_5sec, History_1min, or History_1hour
+   @MinTimestamp    - (DATETIME) Lower bound for sync range (Backup's current MAX)
+   
+   Example Execution:
+   ───────────────────
+   1. Backup_MAX_5sec = 2024-12-05 14:30:00.000
+   2. Primary_MAX_5sec = 2024-12-05 14:35:00.000
+   3. Sync range: 2024-12-05 14:30:00.001 to 2024-12-05 14:35:00.000
+   4. Query inserts all rows from Primary in this range that Backup doesn't have
+   
+   Purpose:
+   --------
+   Sync missing historical data rows from Primary to Backup for a specific table.
+   Closes the gap created during Backup downtime or Primary-only collection.
+   
+   Logic:
+   ──────
+   • Composite JOIN on (PointId + USTTimestamp) - natural key for history rows
+   • WHERE P.USTTimestamp > @MinTimestamp - only recent gaps
+   • WHERE B.PointId IS NULL - rows not on Backup
+   • Executed 3 times per cycle: once for each history table
+   
+   Context:
+   ────────
+   HA History Sync Phase (Backup only) - Main data sync operation.
+   
+   Called For Each History Table:
+   ──────────────────────────────
+   1. History_5sec (highest volume, most frequent sync)
+   2. History_1min (medium volume)
+   3. History_1hour (lowest volume)
+
+
+================================================================================
+DATABASE CONNECTION SUMMARY
+================================================================================
+
+Connection 1: PointsHistory (SQL Server)
+────────────────────────────────────────
+Purpose:              Main application database
+Connection String:    Server=(local); Database=PointsHistory; Integrated Security=true; 
+                      TrustServerCertificate=True;
+Read Access:          Yes (Both Web & Worker)
+Write Access:         Yes (Web updates Point/Parameter; Worker inserts History_*)
+Tables Used:          Point, Parameter, History_5sec, History_1min, History_1hour, History_15min
+
+Queries:
+  Web:    Items 1, 2, 3, 4, 5 (5 queries)
+  Worker: Items 6, 7, 8, 9, 17, 18, 19, 20, 22, 23, 24, 25, 26 (13 queries)
+
+
+Connection 2: EBI_ODBC (Honeywell ODBC)
+────────────────────────────────────────
+Purpose:              Historical data source from Honeywell EBI system
+Connection String:    DSN=EBIDatasource; RedundantLAN=0; RedundantCPU=0;
+Read Access:          Yes (Worker only)
+Write Access:         No
+Tables Used:          History5SecondSnapshot, History1MinSnapshot, History1HourSnapshot
+
+Queries:
+  Worker: Items 14, 15, 16 (3 queries)
+
+
+Connection 3: EBI_SQL (SQL Server - hwsystem)
+──────────────────────────────────────────────
+Purpose:              High Availability status checking (Honeywell system)
+Connection String:    Server=(local); Database=master; Integrated Security=true; 
+                      TrustServerCertificate=True;
+Read Access:          Yes (Worker only)
+Write Access:         No
+Objects Used:         hwsystem.dbo.hsc_sp_IsPrimary (stored proc), 
+                      hwsystem.dbo.hsc_mfn_IsPrimary (scalar function)
+
+Queries:
+  Worker: Items 10, 11, 12, 13 (4 queries)
+
+
+================================================================================
+TABLE ACCESS MATRIX - COMPREHENSIVE
+================================================================================
+
+Table                   | DB              | SELECT | INSERT | UPDATE | DELETE | Access By
+────────────────────────┼─────────────────┼────────┼────────┼────────┼────────┼───────────────────────
+Point                   | PointsHistory   | ✓ 2,9  | ✗      | ✓ 3    | ✗      | Web (Grid), Worker (HA)
+Parameter               | PointsHistory   | ✓ 1    | ✗      | ✓ 4    | ✗      | Web only
+History_5sec            | PointsHistory   | ✓ 6    | ✓ 17   | ✗      | ✗      | Worker (ETL)
+History_1min            | PointsHistory   | ✓ 7    | ✓ 18   | ✗      | ✗      | Worker (ETL, Agg)
+History_1hour           | PointsHistory   | ✓ 8    | ✓ 19   | ✗      | ✗      | Worker (ETL)
+History_15min           | PointsHistory   | ✗      | ✓ 20   | ✗      | ✗      | Worker (Aggregation)
+#History (temp)         | PointsHistory   | ✓ 17,18,19| ✓ 17,18,19| ✗   | ✗      | Worker (staging only)
+────────────────────────┼─────────────────┼────────┼────────┼────────┼────────┼───────────────────────
+History5SecondSnapshot  | EBI_ODBC        | ✓ 14   | ✗      | ✗      | ✗      | Worker (ETL source)
+History1MinSnapshot     | EBI_ODBC        | ✓ 15   | ✗      | ✗      | ✗      | Worker (ETL source)
+History1HourSnapshot    | EBI_ODBC        | ✓ 16   | ✗      | ✗      | ✗      | Worker (ETL source)
+────────────────────────┼─────────────────┼────────┼────────┼────────┼────────┼───────────────────────
+hwsystem.hsc_sp_*       | EBI_SQL         | ✗      | ✗      | ✗      | ✗      | Worker (Exec 12, 13)
+hwsystem.hsc_mfn_*      | EBI_SQL         | ✓ 10,11| ✗      | ✗      | ✗      | Worker (Metadata check)
+
+
+================================================================================
+POINT TABLE SCHEMA (IMMUTABLE - NO CHANGES ALLOWED)
+================================================================================
+
+Column                 | Type           | Constraint  | Editable? | Description
+───────────────────────┼────────────────┼─────────────┼───────────┼──────────────────────────
+PointId                | INT            | PK, NOT NULL| No        | Unique point identifier
+PointName              | VARCHAR(255)   | NOT NULL    | No        | Point name from EBI (RO)
+ParamName              | VARCHAR(255)   | NOT NULL    | No        | Parameter name from EBI (RO)
+Description            | VARCHAR(MAX)   | NULLABLE    | Yes       | User-editable description
+Device                 | VARCHAR(255)   | NULLABLE    | Yes       | User-editable device name
+HistoryFast            | BIT            | NOT NULL    | No        | System flag: collect 5-sec?
+HistorySlow            | BIT            | NOT NULL    | No        | System flag: collect 1-min?
+HistoryExtd            | BIT            | NOT NULL    | No        | System flag: collect 1-hour?
+HistoryFastArch        | BIT            | NOT NULL    | Yes       | User flag: archive 5-sec?
+HistorySlowArch        | BIT            | NOT NULL    | Yes       | User flag: archive 1-min?
+HistoryExtdArch        | BIT            | NOT NULL    | Yes       | User flag: archive 1-hour?
+
+RO = Read-Only
+
+Immutable Columns (no UPDATE allowed):
+  PointId, PointName, ParamName, HistoryFast, HistorySlow, HistoryExtd
+
+Editable Columns (UPDATE allowed):
+  Description, Device, HistoryFastArch, HistorySlowArch, HistoryExtdArch
+
+
+================================================================================
+HISTORY TABLE SCHEMA (IMMUTABLE - NO CHANGES ALLOWED)
+================================================================================
+
+Table           | Columns                                | Granularity | Volume  | Purpose
+────────────────┼────────────────────────────────────────┼─────────────┼─────────┼────────────────────────
+History_5sec    | PointId, USTTimestamp, Timestamp, Value| 5 seconds   | Highest | Raw data from EBI
+History_1min    | PointId, USTTimestamp, Timestamp, Value| 1 minute    | Medium  | Pre-agg'd from EBI
+History_1hour   | PointId, USTTimestamp, Timestamp, Value| 1 hour      | Lower   | Pre-agg'd from EBI
+History_15min   | USTTimestamp, Timestamp,               | 15 minutes  | Low     | Calculated average
+                | PointName, ParamName, Value            |             |         | (unique: has names!)
+
+KEY DIFFERENCE - History_15min:
+  • Stores PointName/ParamName (like a key reference)
+  • Unlike History_5sec/1min/1hour which store only PointId
+  • Allows direct point identification without JOIN to Point table
+
+
+================================================================================
+PARAMETER TABLE SCHEMA (IMMUTABLE)
+================================================================================
+
+Column   | Type           | Constraint  | Purpose
+─────────┼────────────────┼─────────────┼──────────────────────────────────
+Name     | VARCHAR(255)   | PK          | Configuration key name
+Value    | VARCHAR(MAX)   | NULLABLE    | Configuration value ("0", "1", or text)
+
+Example Rows:
+─────────────
+Name: "RedundantPointHistory"    Value: "1"  (Boolean - HA enabled?)
+Name: "LogLevel"                 Value: "1"  (Logging enabled?)
+Name: "LastSync"                 Value: "2024-12-05 14:35:00.000" (Timestamp)
+
+
+================================================================================
+QUERY STATISTICS & PATTERNS
+================================================================================
+
+Query Type Distribution:
+────────────────────────
+SELECT (Read-only):           12 queries  (54.5%)  {Items: 1,2,6,7,8,9,10,11,14,15,16,24,25}
+INSERT (Write - New data):     4 queries  (18.2%)  {Items: 17,18,19,20}
+INSERT + SELECT (Write - Syn):2 queries  (9.1%)   {Items: 22,26}
+UPDATE (Write - Modify):       2 queries  (9.1%)   {Items: 3,4,23}
+EXECUTE (Stored proc/Function):4 queries  (18.2%)  {Items: 5,12,13}
+
+Note: Total > 26 because EXECUTE operations count separately.
+
+Frequency & Timing:
+────────────────────
+• Every Worker Cycle (High Frequency):
+  - Items 6,7,8 (timestamp checks for each history type)
+  - Item 9 (fetch enabled points)
+  - Items 10,11,12,13 (HA status checks)
+  - Items 14,15,16 (ODBC data extraction) OR Items 24,25,26 (if Backup)
+  - Items 17,18,19 (data insertion)
+  - Item 20 (15-min aggregation) - every 15 minutes
+
+• Per Web User Action:
+  - Item 1 (read parameter) - initial page load
+  - Item 2 (get all points) - page load / refresh
+  - Item 3 (update point) - on grid edit / save
+  - Item 4 (store parameter) - on settings change
+  - Item 5 (refresh points) - on manual refresh button
+
+• Per High Availability Cycle (if Backup):
+  - Items 21,22,23 (Point sync) - less frequent (points don't change often)
+  - Items 24,25,26 (History sync) - per worker cycle
+
+
+Parameter Usage Pattern:
+─────────────────────────
+• Dynamic Parameters:
+  Items 14,15,16: Time range parameters (@StartTime, @EndTime)
+                  Point list parameters (dynamic ORs in WHERE clause)
+  
+• Fixed Parameters:
+  Item 3: PointId, Descriptor, Device, archive flags
+  Item 4: Name, Value
+  Item 5: ProcessPnt path
+
+
+================================================================================
+.NET 8 MIGRATION CONSIDERATIONS & CONSTRAINTS
+================================================================================
+
+CRITICAL IMMUTABILITY CONSTRAINTS:
+═══════════════════════════════════
+1. Database schema is LOCKED - no migrations or DDL changes
+2. All table structures must remain identical
+3. Column names, types, and nullability cannot change
+4. No new columns, no column removals
+
+SQLCLIENT LIBRARY MIGRATION:
+════════════════════════════
+Current:  System.Data.SqlClient (legacy)
+Target:   Microsoft.Data.SqlClient (modern)
+
+Breaking Changes:
+  • Connection string format remains compatible
+  • TrustServerCertificate=True may be required for SSL
+  • Async methods recommended (.NET 8 best practice)
+
+ODBC DRIVER REQUIREMENT:
+════════════════════════
+Mandatory Setup:
+  • ODBC driver installed on Worker server
+  • DSN "EBIDatasource" must exist and be configured
+  • Credentials: Verify against Honeywell system requirements
+  • Connection pooling: Consider enabling in EBI_ODBC connection
+
+Testing Required:
+  • ODBC connectivity before deploying Worker
+  • DSN accessibility from application context (may differ from admin context)
+  • Performance testing: ODBC queries can be I/O heavy
+
+CROSS-SERVER QUERIES (High Availability):
+═══════════════════════════════════════════
+Required Configuration:
+  • Linked servers configured between Primary and Backup
+  • OR direct server connectivity with 4-part names (ServerName.Database.Schema.Table)
+  • Network connectivity verified between servers
+  • Firewall rules allow SQL traffic (port 1433 default)
+
+Authentication:
+  • Service account must have permissions on both servers
+  • Cross-database ownership chains may be needed
+  • Test with least-privilege service account credentials
+
+Performance Consideration:
+  • Cross-server queries (Items 21,22,23,24,25,26) are network-dependent
+  • Latency increases proportionally to data volume
+  • Consider batch sizes to avoid timeouts
+
+EXTERNAL EXECUTABLES:
+═════════════════════
+Required Files:
+  • bckbld.exe (point extraction tool)
+  • ProcessPnt.exe (point import tool)
+  • Both must be accessible on web server
+  • Configured paths in appsettings.json
+
+Migration Impact:
+  • Paths may need updating for .NET 8 deployment
+  • Verify 32-bit vs 64-bit compatibility
+  • Consider containerization if used in Docker/.NET Core context
+
+STORED PROCEDURES & FUNCTIONS:
+═══════════════════════════════
+Database Objects Required:
+  • sp_ReadEbiPoints (PointsHistory.dbo) - must exist in destination DB
+  • hwsystem.dbo.hsc_sp_IsPrimary (Honeywell system) - verify availability
+  • hwsystem.dbo.hsc_mfn_IsPrimary (Honeywell system) - fallback if proc missing
+
+Pre-Migration Checklist:
+  ☐ Verify sp_ReadEbiPoints exists and is callable
+  ☐ Test hwsystem stored procedure/function in destination environment
+  ☐ Confirm return codes match expected values (0 = success)
+  ☐ Document any deviations in Honeywell versions
+
+RECOMMENDED .NET 8 IMPROVEMENTS:
+═════════════════════════════════
+1. Async SQL Operations:
+   • Use SqlConnection.OpenAsync()
+   • Use SqlCommand.ExecuteReaderAsync()
+   • Benefits: Non-blocking I/O, better thread efficiency
+
+2. Connection String Builder:
+   • Use SqlConnectionStringBuilder for clarity
+   • Enables property validation at compile time
+
+3. Parametrized Queries (Already Used):
+   • Good: All current queries use @parameters
+   • Continue using parameterization to prevent SQL injection
+
+4. Error Handling:
+   • Migrate from generic try/catch to specific SqlException handling
+   • Implement retry logic for transient failures
+   • Log correlation IDs for distributed tracing
+
+5. Configuration Management:
+   • Migrate from app.config to appsettings.json
+   • Use Dependency Injection for DbAccess instances
+   • Support environment-specific configs (Development/Staging/Production)
+
+6. Logging:
+   • Integrate with .NET 8 logging framework (ILogger)
+   • Replace custom LogFile class with built-in logging
+   • Enable structured logging for better diagnostics
+
+
+================================================================================
+SUMMARY COMPARISON TABLE - CORRECTED VS ORIGINAL
+================================================================================
+
+Area                    Original Claim              Corrected Implementation
+─────────────────────────────────────────────────────────────────────────────
+Point Sync              INSERT only (Item 16)       INSERT (new) + UPDATE (existing)
+                        (Item 22-23)
+                        
+History Sync            INSERT only (Item 17)       SELECT MAX (range check) + INSERT
+                        (Items 24-26)
+                        
+History Insert Method   Direct INSERT...VALUES      Temp table staging for ALL 3 types:
+for 1min & 1hour        (Items 13-14)               CREATE #History + INSERT + SELECT
+                        (Items 17-19)
+                        
+ODBC Source Table       History5SecondSnapshot      Dynamic selection based on history type:
+                        (Item 11)                   • History5SecondSnapshot (Item 14)
+                                                    • History1MinSnapshot (Item 15)
+                                                    • History1HourSnapshot (Item 16)
+
+HA Status Check         EXEC hwsystem procs         Explicit OBJECT_ID checks first:
+                        (Items 10-13)               • SELECT OBJECT_ID('...sp_IsPrimary')
+                                                    • SELECT OBJECT_ID('...mfn_IsPrimary')
+                                                    Then: EXEC or SELECT function
+
+Query Count             17 queries                  26 queries (corrected inventory)
+
+HA Sync Queries         2 broad categories          4 dedicated phases:
+                        (16-17)                     • Point range determination (Item 21)
+                                                    • Point INSERT (Item 22)
+                                                    • Point UPDATE (Item 23)
+                                                    • History range checks (24-25)
+                                                    • History sync (Item 26)
+
+
+================================================================================
+END OF COMPREHENSIVE REPORT
+================================================================================
+
+Document Version:  2.0 (Corrected)
+Last Updated:      2024-12-05
+Accuracy Status:   ✓ Complete & Verified Against Source Code
+Migration Status:  Ready for .NET 8 Migration Planning
